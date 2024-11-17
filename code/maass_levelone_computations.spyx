@@ -1,0 +1,311 @@
+"""
+Heuristic, double precision computation for SL(2, Z) Maass forms.
+"""
+
+import sys
+import time
+
+import sage.libs.mpmath.all as mpmath
+from sage.all import CC, I
+import numpy as np
+cimport numpy as cnp
+
+from lpkbessel import besselk_dp
+
+from sage.matrix.constructor import matrix
+from sage.functions.all import floor
+from sage.rings.complex_double import CDF
+from sage.rings.real_double import RDF
+
+mpmath_ctx = mpmath.fp
+mpmath.mp.dps = 50
+
+cdef double cppi =<double> 3.14159265358979323846264338327950288419716939
+cdef double twopi =<double> 2*3.14159265358979323846264338327950288419716939
+
+cdef extern from "math.h":
+    double sqrt(double)
+    double cos(double)
+    double sin(double)
+    double fabs(double)
+
+
+VERBOSE = False
+
+
+Tmatrix = matrix([[1, 1], [0, 1]])
+Smatrix = matrix([[0, -1], [1, 0]])
+Idmatrix = matrix([[1, 0], [0, 1]])
+
+
+def act(gamma, z):
+    """
+    Computes the action of matrix `gamma` on point z.
+    """
+    a, b = gamma[0]
+    c, d = gamma[1]
+    return CDF((a*z + b)/(c*z + d))
+
+
+def is_in_fund_domain(z):
+    """
+    Returns true if z is (approximately) within the fundamental domain, false
+    otherwise.
+    """
+    z = CDF(z)
+    x = z.real()
+    if x < -0.501 or x > 0.501:
+        return False
+    if z.norm() < 0.999:
+        return False
+    return True
+
+
+def pullback(z):
+    """
+    Returns (gamma, zstar), where gamma z = zstar and zstar is in the
+    fundamental domain.
+    """
+    gamma = Idmatrix
+    z = CDF(z)
+    while not is_in_fund_domain(z):
+        x, y = z.real(), z.imag()
+        xshift = -floor(x + 0.5)
+        gamma = Tmatrix**xshift * gamma
+        z = CDF(x + xshift + 1j*y)
+        if z.norm() < 0.999:
+            z = act(Smatrix, z)
+            gamma = Smatrix * gamma
+    return gamma, z
+
+
+def make_zj_list(Y, Q=50):
+    """
+    Returns list of z_j = x_j + iY
+    """
+    ret = []
+    for j in range(1, Q + 1):
+        ret.append(1/(2*Q) * (j - 0.5) + 1j*Y)
+    return ret
+
+
+def make_zjstar_list(zjlist):
+    """
+    Returns list of z_j^* in same order as zjlist
+    """
+    return list(map(lambda zj: pullback(zj)[1], zjlist))
+
+
+cpdef double kappa_with_mult(double r, double u):
+    """
+    Compute besselk(ir, 2*pi*u) * exp(pi * r / 2)
+    """
+    return besselk_dp(r, twopi * u, pref=1)
+
+
+def compute_V(n, m, R, Q, zjlist, zjstarlist, symmetry=-1):
+    """
+    Returns the constant V(n, m)
+    """
+    if symmetry == 1:
+        cs = cos
+    else:
+        cs = sin
+    cdef double ret = 0.0
+    # zj = xj + i yj, zjstar = xjstar + i yjstar
+    cdef double xj, yj
+    cdef double xjstar, yjstar
+    cdef double ncy, mcy
+    cdef double complex zjcy, zjstarcy
+    ncy = <double> n
+    mcy = <double> m
+    cdef double two_over_Q = 2/Q
+    for zj, zjstar in zip(zjlist, zjstarlist):
+        zjcy = <double complex> zj
+        zjstarcy = <double complex> zjstar
+        xj = zjcy.real
+        yj = zjcy.imag
+        xjstar = zjstarcy.real
+        yjstar = zjstarcy.imag
+        ret += sqrt(yjstar) * kappa_with_mult(R, fabs(mcy * yjstar)) \
+                * cs(twopi * mcy * xjstar) * cs(twopi * ncy * xj)
+    ret *= two_over_Q
+    return ret
+
+
+def make_matrix(Q, Y, R, zjlist, zjstarlist, symmetry=-1, withtime=False):
+    """
+    From the full matrix system VC = 0, set the first coefficient to 1, remove
+    the first row, and write the resulting normalized system as V_1 C_1 = B.
+    Then return V_1 and B.
+    """
+    size = Q - 1
+    retmat = []
+    B = [0] * (size - 1)
+    if withtime:
+        starttime = time.time()
+    for n in range(2, size+1):
+        if withtime:
+            now = time.time()
+        # row = []
+        row = [0]*(size-1)
+        for m in range(2, size+1):
+            entry = compute_V(n, m, R, Q, zjlist, zjstarlist, symmetry=symmetry)
+            if n == m:
+                entry = entry - sqrt(Y) * kappa_with_mult(R, n*Y)
+            # row.append(entry)
+            row[m-2] = entry
+
+        bentry = -compute_V(n, 1, R, Q, zjlist, zjstarlist, symmetry=symmetry)
+        # B.append([bentry])
+        B[n-2] = bentry
+        retmat.append(row)
+
+        if withtime:
+            print("# row {} computed in {} seconds".format(n, time.time() - now))
+    if withtime:
+        print("# Matrix computed in {} seconds".format(time.time() - starttime))
+    return retmat, B
+
+
+def make_full_matrix(Q, Y, R, zjlist, zjstarlist, symmetry=-1, withtime=False):
+    """
+    Return the matrix V from the full (nonnormalized) system VC = 0.
+    """
+    size = Q - 1
+    retmat = []
+    if withtime:
+        starttime = time.time()
+    for n in range(1, size+1):
+        if withtime:
+            now = time.time()
+        row = [0]*(size)
+        for m in range(1, size+1):
+            entry = compute_V(n, m, R, Q, zjlist, zjstarlist, symmetry=symmetry)
+            if n == m:
+                entry = entry - sqrt(Y) * kappa_with_mult(R, n*Y)
+            row[m-1] = entry
+        retmat.append(row)
+        if withtime:
+            print("# row {} computed in {} seconds".format(n, time.time() - now))
+    if withtime:
+        print("# Matrix computed in {} seconds".format(time.time() - starttime))
+    return retmat
+
+
+def get_truncation_point(R, Y, eps=1e-16):
+    """
+    Computes the truncation point for a Maass waveform.
+    """
+    old_precision = mpmath.mp.dps
+    mpmath.mp.dps = int(mpmath.ceil(abs(mpmath.log10(eps)))) + 5
+    twopi = 2*mpmath.pi()
+    twopiy = twopi * mpmath.mpf(Y)
+    # We use 12 instead of 10 to account for error accumulation
+    minv = (mpmath.mpf(12) * mpmath.power(R, 0.3333) + R) / twopiy
+    minm = mpmath.ceil(minv)
+    try:
+        # Estimate \sum_{n \geq M} a(n) \sqrt{Y} K_{iR}(2 \pi n Y) e(nx)
+        # Taken from Fredrik's code
+        for m in range(int(minm), 10000):
+            arg = mpmath.mp.pi() * mpmath.mpf(Y)
+            r = mpmath.mpf(1) / arg.sqrt()
+            arg = arg * mpmath.mpf(2*m)
+            r = r * mpmath.gammainc(mpmath.mpf(0.5), arg)
+            error_estimate = r
+            if (error_estimate < eps):
+                raise StopIteration()
+    except StopIteration:
+        mpmath.mp.dps = old_precision
+        return m
+    mpmath.mp.dps = old_precision
+    raise ValueError("No good truncation value was found!")
+
+
+def maass_form_coeffs(Y, R, symmetry=-1):
+    M = get_truncation_point(R, Y)
+    Q = M + 5
+    zjlist = make_zj_list(Y, Q)
+    zjstarlist = make_zjstar_list(zjlist)
+    mat, B = make_matrix(Q, Y, R, zjlist, zjstarlist, symmetry=symmetry)
+    # We solve in a higher precision space, even though individual entries are
+    # only in double precision. In some cases, this precision might not be
+    # enough and a ZeroDivisionException might occur. This is something that
+    # requires additional attention to figure out.
+    matmpm = mpmath.mp.matrix(mat)
+    Bmpm = mpmath.mp.matrix(B)
+    return (matmpm ** -1) * Bmpm
+
+
+def find_single_ev_linearized(R, ballradius, symmetry=-1, verbosity=1):
+    """
+    Locate a single eigenvalue of a Maass form with given symmetry type in a
+    ball of radius `ballradius` around R.
+    """
+    if VERBOSE:
+        verbosity = 100
+    Y = 0.5
+    M = get_truncation_point(R+ballradius, 0.995*Y)
+    Q = M + 5
+    zjlist = make_zj_list(Y, Q)
+    zjstarlist = make_zjstar_list(zjlist)
+    error_bound = 1e-7
+
+    cands = [(R, ballradius)]
+
+    for iternum in range(200):
+        if len(cands) == 0:
+            return None
+        curr_guess, curr_radius = cands.pop()
+        if verbosity >= 2:
+            print("# Current guess and radius: {}, {}. {} remaining".format(curr_guess, curr_radius, len(cands)))
+        if curr_radius < error_bound:
+            if verbosity > 0:
+                print("# {} is a near candidate--- checking diffs".format(curr_guess))
+            coeffs_Y1 = maass_form_coeffs(Y, mpmath_ctx.mpf(curr_guess), symmetry=symmetry)
+            coeffs_Y2 = maass_form_coeffs(0.9*Y, mpmath_ctx.mpf(curr_guess), symmetry=symmetry)
+
+            coeff_error = sum(abs(coeffs_Y1[j] - coeffs_Y2[j]) for j in range(4))
+            if coeff_error < 1e-5:
+                if verbosity > 0:
+                    print("# {} has passed check.".format(curr_guess))
+                    print("#   Coeff error was {}".format(mpmath.nstr(coeff_error)))
+                return curr_guess, coeffs_Y1
+            else:
+                if verbosity > 0:
+                    print("# {} failed check. It's not an eigenvalue.".format(curr_guess))
+                    print("#   Coeff error was {}".format(mpmath.nstr(coeff_error)))
+                continue
+
+        V = make_full_matrix(Q, Y, curr_guess, zjlist, zjstarlist, symmetry=symmetry)
+        # it's necessary to approximate the derivative of the matrix V. I do this
+        # numerically, roughly.
+        difference = 1e-10
+        Vplus = make_full_matrix(Q, Y, curr_guess + difference, zjlist, zjstarlist, symmetry=symmetry)
+        V_sage = matrix(RDF, V)
+        Vplus_sage = matrix(RDF, Vplus)
+        Vprime_sage = (Vplus_sage - V_sage)/difference
+
+        linearized_mat_sage = Vprime_sage.inverse() * V_sage
+        eigenvalues = linearized_mat_sage.eigenvalues()
+        for eigenvalue_delta in eigenvalues:
+            if abs(eigenvalue_delta) < curr_radius:
+                cands.append((curr_guess - eigenvalue_delta.real(), abs(eigenvalue_delta*0.50)))
+    return None
+
+
+def find_evs(R1, R2, symmetry=-1, verbosity=0):
+    if VERBOSE:
+        verbosity = 100
+    evlist = []
+    currR = R1
+    while currR < R2:
+        if verbosity >= 2:
+            print("# Trying {}".format(currR))
+        cand = find_single_ev_linearized(currR, 0.1, symmetry=symmetry, verbosity=verbosity)
+        if cand:
+            if verbosity >= 1:
+                print(cand[0])
+            evlist.append(cand)
+        currR += 0.1
+    return evlist

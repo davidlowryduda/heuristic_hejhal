@@ -1,0 +1,167 @@
+"""
+Basic test suite.
+"""
+from maass_levelone_computations import *
+
+
+def is_close_enough(val1, val2, tolerance=1e-10):
+    return abs(val1 - val2) < tolerance
+
+
+def test_basic_matrix_actions():
+    """
+    Matrix actions, fundamental domain checks.
+    """
+    assert is_close_enough(act(Tmatrix, 1+0.5j), 2.0 + 0.5j), "Tmatrix"
+    assert is_close_enough(act(Smatrix, 1+1j), -0.5 + 0.5j), "Smatrix"
+    assert is_close_enough(act(Idmatrix, 1+1j), 1+1j), "Idmatrix"
+
+    assert is_in_fund_domain(0.0 + 10j), "FunD"
+    assert is_in_fund_domain(0.5 + 1j), "FunD"
+    assert not is_in_fund_domain(1.5 + 1j), "FunD"
+    assert not is_in_fund_domain(0.25 + 0.2j), "FunD"
+    print("  Basic matrix actions tests pass.")
+
+
+def test_pullback():
+    """
+    Pullbacks.
+    """
+    z = -1 + 1j
+    gamma, zstar = pullback(z)
+    assert gamma == Tmatrix, "pullback matrix"
+    assert is_close_enough(zstar, 1j), "pullback zstar"
+
+    z = 0 + 1j
+    gamma, zstar = pullback(z)
+    assert gamma == Idmatrix, "id pullback"
+    assert z == zstar, "id zstar"
+
+    print("  Pullback tests pass.")
+
+
+def test_zj_lists():
+    """
+    Zj and Zjstar lists.
+    """
+    Y = 0.5
+    Q = 13
+    zjlist = make_zj_list(Y, Q)
+    assert is_close_enough(zjlist[0], 0.019230 + 0.5j, tolerance=1e-5), "zj[0]"
+    assert is_close_enough(zjlist[1], 0.0576923 + 0.5j, tolerance=1e-5), "zj[1]"
+
+    zjstarlist = make_zjstar_list(zjlist)
+    assert is_close_enough(zjstarlist[0], -0.0768094 + 1.997045j, tolerance=1e-5), "zjstar[0]"
+    assert is_close_enough(zjstarlist[1], -0.22773722 + 1.97372262j, tolerance=1e-5), "zjstar[1]"
+
+    print("  zj_lists tests pass.")
+
+
+def test_bessel():
+    """
+    Bessel function evaluation.
+    """
+    R0 = 9.533695
+    assert is_close_enough(kappa_with_mult(R0, 1), 0.2178033412668789), "bessel1"
+    mpmathval = mpmath_ctx.besselk(1j * R0, 2*mpmath.pi) * mpmath_ctx.exp(mpmath_ctx.mpf(R0 *mpmath.pi/2))
+    assert is_close_enough(kappa_with_mult(R0, 1), mpmathval), "mpmathcomp"
+    print("  bessel tests pass.")
+
+
+def test_Vcomp():
+    """
+    V testing.
+    """
+    R0 = 9.533695
+    Y = 0.5
+    Q = 13
+    zjlist = make_zj_list(Y, Q)
+    zjstarlist = make_zjstar_list(zjlist)
+    # Hand computed value
+    assert is_close_enough(compute_V(2, 2, R0, Q, zjlist, zjstarlist), -0.001628593987)
+    print("  Sample V computation passes.")
+
+
+def test_matrix1():
+    R0 = 9.533695
+    Y = 0.5
+    Q = 13
+    zjlist = make_zj_list(Y, Q)
+    zjstarlist = make_zjstar_list(zjlist)
+    mat, B = make_matrix(Q, Y, R0, zjlist, zjstarlist)
+    assert is_close_enough(mat[0][0], -0.1556388, tolerance=1e-5), "mat[0][0]"
+    assert is_close_enough(mat[0][1], -2.531318382e-6), "mat[0][1]"
+    assert is_close_enough(B[0], 0.166275134175), "B[0][0]"
+    assert is_close_enough(B[1], 0.223012459689), "B[1][0]"
+    print("  Matrix1 tests pass.")
+
+
+def test_truncation():
+    R0 = 9.533695
+    Y = 0.5
+    assert get_truncation_point(R0, Y) == 12
+    assert get_truncation_point(R0, Y, eps=1e-25) == 18
+    print("  Truncation tests pass.")
+
+
+def test_coefficient_computation():
+    R0 = 9.53369526135
+    Y = 0.5
+    ret1 = maass_form_coeffs(Y, R0, symmetry=-1)
+    ret2 = maass_form_coeffs(0.9*Y, R0, symmetry=-1)
+    known_coeffs = [
+        -1.068333551,
+        -0.456197355,
+        0.141336577,
+        -0.290672555,
+    ]
+    for j in range(4):
+        assert is_close_enough(ret1[j], known_coeffs[j], 1e-8), "9.533 1"
+        assert is_close_enough(ret2[j], known_coeffs[j], 1e-8), "9.533 2"
+
+    R1 = 13.7797513519
+    ret3 = maass_form_coeffs(Y, R1, symmetry=1)
+    ret4 = maass_form_coeffs(0.9*Y, R1, symmetry=1)
+    known_coeffs1 = [
+        1.549304478,
+        0.246899772,
+        1.400344365,
+        0.737060385,
+    ]
+    for j in range(4):
+        assert is_close_enough(ret3[j], known_coeffs1[j], 1e-8), "13.77 1"
+        assert is_close_enough(ret4[j], known_coeffs1[j], 1e-8), "13.77 2"
+
+    print("  Coefficient computation tests pass.")
+
+
+def test_eigenvalue_finding():
+    assert is_close_enough(
+        9.53369526135,
+        find_single_ev_linearized(9.5, 1, symmetry=-1, verbosity=0)[0],
+        1e-6
+    ), "9.533 find_ev_linear"
+    assert is_close_enough(
+        13.7797513519,
+        find_single_ev_linearized(13.7, 0.5, symmetry=1, verbosity=0)[0],
+        1e-6
+    ), "13.77975 find_ev_linear"
+    print("  Eigenvalue finding tests pass.")
+
+def run_tests():
+    """
+    Run all tests.
+    """
+    print("\nRunning tests...")
+    test_basic_matrix_actions()
+    test_pullback()
+    test_zj_lists()
+    test_bessel()
+    test_Vcomp()
+    test_matrix1()
+    test_truncation()
+    test_coefficient_computation()
+    test_eigenvalue_finding()
+
+    print("\nAll tests pass.\n")
+    #find_single_ev_linearized(9.5, 0.5)
