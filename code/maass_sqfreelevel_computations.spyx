@@ -1,0 +1,623 @@
+"""
+Heuristic, double precision computation for Gamma0(N) Maass forms, where
+    N = 2^r p_1 p_2 ... p_n
+for r <= 3 and each p_j distinct, odd.
+
+Throughout, only trivial characters. In this version, there is nothing clever
+being done to reduce the dimension of the system.
+
+These are precisely the forms having a sine/cosine expansion at each cusp (the
+same type at every cusp).
+"""
+import sys
+import time
+
+# For caching
+from collections import OrderedDict
+
+import sage.libs.mpmath.all as mpmath
+from sage.all import CC, I, infinity, Gamma0, primes
+import numpy as np
+cimport numpy as cnp
+
+from lpkbessel import besselk_dp
+
+from groupdata import group_data
+
+from sage.matrix.constructor import matrix
+from sage.functions.all import floor
+from sage.rings.complex_double import CDF
+from sage.rings.real_double import RDF
+
+
+mpmath_ctx = mpmath.fp
+mpmath.mp.dps = 50
+
+cdef double cppi =<double> 3.14159265358979323846264338327950288419716939
+cdef double twopi =<double> 2*3.14159265358979323846264338327950288419716939
+
+cdef extern from "math.h":
+    double sqrt(double)
+    double cos(double)
+    double sin(double)
+    double fabs(double)
+
+VERBOSE = True
+
+
+cpdef double kappa_with_mult(double r, double u):
+    """
+    Compute besselk(ir, 2*pi*u) * exp(pi * r / 2)
+    """
+    return besselk_dp(r, twopi * u, pref=1)
+
+BESSEL_CACHE = OrderedDict()
+MAX_SIZE = 100000
+def bessel_cache(double r, double u):
+    if (r, u) in BESSEL_CACHE:
+        return BESSEL_CACHE[(r, u)]
+    cdef double ret = kappa_with_mult(r, u)
+    BESSEL_CACHE[(r, u)] = ret
+    if len(BESSEL_CACHE) > MAX_SIZE:
+        BESSEL_CACHE.popitem(last=False)
+    return ret
+
+Tmatrix = matrix([[1, 1], [0, 1]])
+Smatrix = matrix([[0, -1], [1, 0]])
+Idmatrix = matrix([[1, 0], [0, 1]])
+
+
+def act(gamma, z):
+    """
+    Computes the action of matrix `gamma` on point z. Assumes that the matrix
+    has nonzero determinant.
+    """
+    a, b = gamma[0]
+    c, d = gamma[1]
+    if z == infinity:
+        if c != 0:
+            return CDF(a/c)
+        return infinity
+    return CDF((a*z + b)/(c*z + d))
+
+
+def is_in_fund_domain(z):
+    """
+    Returns true if z is (approximately) within the Gamma(1) fundamental
+    domain, false otherwise.
+    """
+    z = CDF(z)
+    x = z.real()
+    if x < -0.501 or x > 0.501:
+        return False
+    if z.norm() < 0.999:
+        return False
+    return True
+
+
+def pullback(z):
+    """
+    Returns (gamma, zstar), where gamma z = zstar and zstar is in the
+    Gamma(1) fundamental domain.
+    """
+    gamma = Idmatrix
+    z = CDF(z)
+    while not is_in_fund_domain(z):
+        x, y = z.real(), z.imag()
+        xshift = -floor(x + 0.5)
+        gamma = Tmatrix**xshift * gamma
+        z = CDF(x + xshift + 1j*y)
+        if z.norm() < 0.999:
+            z = act(Smatrix, z)
+            gamma = Smatrix * gamma
+    return gamma, z
+
+
+def pullback_to_gammaN_fund_domain(z, groupdata):
+    """
+    Returns (gamma, zstar), where gamma z = zstar, zstar is in the fundamental
+    domain for Gamma0(N), and gamma is in Gamma0(N).
+
+    groupdata should specify the data for Gamma0(N), as given by
+    groupdata.group_data.
+    """
+    gamma1, ztilde = pullback(z)
+    level = groupdata['level']
+    # We don't do this often. I just use sage to determine inclusion.
+    congruence_subgroup = Gamma0(level)
+    for coset_rep in groupdata['coset_reps']:
+        if coset_rep * gamma1 in congruence_subgroup:
+            vj = coset_rep
+            break
+    zstar = act(vj * gamma1, z)
+    return (vj * gamma1, zstar)
+
+
+def nearest_pvertex(w, groupdata):
+    """
+    Returns (nearest vertex, cusp class, corresponding height, w in local
+    coords) for the nearest parabolic vertex in the fundamental domain of
+    Gamma0(N). Here "nearest" means the one wrt which the imaginary part is the
+    highest.
+
+    groupdata should specify the data for Gamma0(N).
+    """
+    record_height = 0
+    record_vl = None
+    record_translate = None  # w in local coordinates
+    for pvertex, udata in groupdata['Udata'].items():
+        sigma = udata[3]
+        Ul = udata[2]
+        cusp_class = udata[1]
+        sigmainv = sigma.inverse()
+        candw = act(sigmainv * Ul, w)
+        cand_height = candw.imag()
+        if cand_height > record_height:
+            record_height = cand_height
+            record_vl = pvertex
+            record_translate = candw
+            record_cusp = cusp_class
+    return record_vl, record_cusp, record_height, record_translate
+
+
+def make_zms(Y, groupdata, Q=50):
+    """
+    Creates a list of z_m and z_mstars at height Y for group specified by
+    groupdata. Returns a list of tuples (z_m, z_mstar, nearest_cusp, w_m).
+
+    Groupdata specifies data for Gamma0(N).
+
+    - Makes a list of z_m = x_m + iY.
+    - Computes the pullback w_m = gamma z_m, where gamma in Gamma0(N) and w_m
+      in the fundamental domain.
+    - Finds the nearest cusp nu_j to w_m and computes z_mstar = w_m (in nu_j
+      coordinates). z_mstar = sigma_j^-1 U_w (w_m).
+    - Assembles the list (z_m, z_mstar, nearest_cusp, w_m).
+
+    Note that `z_mstar` is given in coordinates relative to `nearest_cusp`.
+    """
+    zms = []
+    for j in range(1, Q + 1):
+        zms.append(1/(2*Q) * (j - 0.5) + 1j*Y)
+    ret = []
+    for zm in zms:
+        _, wm = pullback_to_gammaN_fund_domain(zm, groupdata)
+        _, cusp, _, zm_star = nearest_pvertex(wm, groupdata)
+        ret.append((zm, zm_star, cusp, wm))
+    return ret
+
+
+def compute_V(n, k, R, zdata, signs, symmetry=-1):
+    """
+    Returns the constant V(n, k).
+
+    INPUTS
+    ------
+    - n, k     : These are summands for an equation
+                 c(n) bessel_R(Y) = sum_k c(k) V(n, k)
+    - R        : the spectral parameter
+    - zdata    : a list of (zm, zm_star, cusp, wm) as given by make_zms
+    - signs    : a dictionary of the form signs[cusp] = \pm 1.
+    - symmetry : the symmetry type of the Maass form
+
+    Description
+    -----------
+
+    Shorthand description, but see notes for more.
+
+    Q = len(zdata), Y = (height of each z in zlist)
+    V(n, k) = 2/Q sum_{1 <= m <= Q} sign(m) K_k(ym_star) cs(k xm_star) cs(n xm)
+
+    Note this is NOT \widetilde{V}(n, k), i.e. this doesn't subtract the
+    diagonal.
+    """
+    if symmetry == 1:
+        cs = cos
+    else:
+        cs = sin
+    cdef double ret = 0.0
+
+    # z = (zm, zm_star, cusp, wm)
+    # zm = xm + iym
+    # zm_star = xm_star + i ym_star
+    cdef double xm, ym
+    cdef double xmstar, ymstar
+
+    # typed n, k for faster computation
+    cdef double ncy, kcy
+    cdef double complex zmcy, zm_starcy
+    ncy = <double> n
+    kcy = <double> k
+
+    cdef double sign
+    cdef double bessel_part
+
+    Q = len(zdata)
+    cdef double two_over_Q = 2./Q
+    for zm, zmstar, cusp, _ in zdata:
+        zmcy = <double complex> zm
+        zm_starcy = <double complex> zmstar
+        xm = zmcy.real
+        ym = zmcy.imag
+        xmstar = zm_starcy.real
+        ymstar = zm_starcy.imag
+        sign = <double> signs[cusp]
+
+        # bessel_part = bessel_cache(R, fabs(kcy * ymstar))
+        bessel_part = kappa_with_mult(R, fabs(kcy * ymstar))
+
+        ret += sign * sqrt(ymstar) * bessel_part \
+                * cs(twopi * kcy * xmstar) * cs(twopi * ncy * xm)
+    ret *= two_over_Q
+    return ret
+
+
+def compute_V_parallel(n, k, R, zdata, list_of_signs, symmetry=-1):
+    """
+    Returns a list of constants V(n, k), computed with various signs at the
+    same time. In contrast to compute_V, here, we have a list_of_signs. The
+    point of this function is to not recompute the Bessel function several
+    times.
+
+    INPUTS
+    ------
+    - n, k     : These are summands for an equation
+                 c(n) bessel_R(Y) = sum_k c(k) V(n, k)
+    - R        : the spectral parameter
+    - zdata    : a list of (zm, zm_star, cusp, wm) as given by make_zms
+    - signs    : a list of dictionaries of the form signs[cusp] = \pm 1.
+    - symmetry : the symmetry type of the Maass form
+
+    RETURNS
+    -------
+    A list of [V(n, k) in list_of_signs[0], V(n, k) in list_of_signs[1], ...]
+    """
+    if symmetry == 1:
+        cs = cos
+    else:
+        cs = sin
+    cdef ret_array = np.zeros(len(list_of_signs), dtype=np.float)
+
+    # z = (zm, zm_star, cusp, wm)
+    # zm = xm + iym
+    # zm_star = xm_star + i ym_star
+    cdef double xm, ym
+    cdef double xmstar, ymstar
+
+    # typed n, k for faster computation
+    cdef double ncy, kcy
+    cdef double complex zmcy, zm_starcy
+    ncy = <double> n
+    kcy = <double> k
+    cdef double sign
+    Q = len(zdata)
+    cdef double two_over_Q = 2./Q
+    cdef double partial_ret = 0.0
+
+    # NOTE: It would be possible instead base these on numpy arrays and work
+    #       with numpy vectorization. This would give some speed improvement,
+    #       but most of the time is spent computing the Bessel functions and
+    #       so I didn't implement it that way. This would be best if the
+    #       structure of zdata were generally changed.
+    for zm, zmstar, cusp, _ in zdata:
+        zmcy = <double complex> zm
+        zm_starcy = <double complex> zmstar
+        xm = zmcy.real
+        ym = zmcy.imag
+        xmstar = zm_starcy.real
+        ymstar = zm_starcy.imag
+        partial_ret = sqrt(ymstar) * kappa_with_mult(R, fabs(kcy * ymstar)) \
+                      * cs(twopi * kcy * xmstar) * cs(twopi * ncy * xm)
+        for idx, signs in enumerate(list_of_signs):
+            sign = <double> signs[cusp]
+            ret_array[idx] += sign * partial_ret
+
+    ret_array *= two_over_Q
+    return ret_array
+
+
+def make_full_matrix(R, Y, zdata, signs, symmetry=-1, withtime=False):
+    """
+    Return the matrix V from the full (nonnormalized) system VC = 0.
+    """
+    Q = len(zdata)
+    size = Q - 1
+    retmat = []
+    if withtime:
+        starttime = time.time()
+    for n in range(1, size+1):
+        if withtime:
+            now = time.time()
+        row = [0] * size
+        for m in range(1, size+1):
+            entry = compute_V(n, m, R, zdata, signs, symmetry)
+            if n == m:
+                entry = entry - sqrt(Y) * kappa_with_mult(R, n*Y)
+            row[m-1] = entry
+        retmat.append(row)
+        if withtime:
+            print("# row {} computed in {} seconds".format(n, time.time() - now))
+    if withtime:
+        print("# Matrix computed in {} seconds".format(time.time() - starttime))
+    return retmat
+
+
+class MaassSpaceData:
+    """
+    A mostly-dataclass that holds the various pieces of data necessary for
+    computation of a Maass form.
+
+    `groupdata` is more fundamental and should be precomputed.
+
+    This also estimates lenghts of certain sums. These lengths are increasing
+    in R, so give an upper bound for the value R in the input.
+    """
+    def __init__(self, Rmax, groupdata, Y=None, eps=1e-16):
+        # Guaranteed data members
+        self.Rmax = Rmax
+        self.groupdata = groupdata
+        self.level = groupdata['level']
+        if not Y:
+            self._set_Y()
+        else:
+            self.Y = Y
+        self.Q = self.compute_truncation_point(eps) + 5
+        self.zdata = make_zms(self.Y, self.groupdata, self.Q)
+
+    def _set_Y(self):
+        """
+        Set Y to a value guaranteed below the minimal height of points on the
+        fundamental domain. From Theorem 1.1 of Fredrik's thesis, this is
+        anything below sqrt(3)/2N for Gamma0(N).
+        """
+        self.Y = sqrt(3) / (2. * self.level) * 0.98
+
+    def compute_truncation_point(self, eps=1e-16):
+        """
+        Computes the truncation point M for the Maass waveform, so that the
+        first M coefficients should specify the Maass form to an error of
+        1e-16.
+        """
+        R = self.Rmax
+        Y = self.Y * 0.995
+        old_precision = mpmath.mp.dps
+        mpmath.mp.dps = int(mpmath.ceil(abs(mpmath.log10(eps)))) + 5
+        twopi = 2*mpmath.pi()
+        twopiy = twopi * mpmath.mpf(Y)
+        # We use 12 instead of 10 to account for error accumulation
+        minv = (mpmath.mpf(12) * mpmath.power(R, 0.3333) + R) / twopiy
+        minm = mpmath.ceil(minv)
+        try:
+            # Estimate \sum_{n \geq M} a(n) \sqrt{Y} K_{iR}(2 \pi n Y) e(nx)
+            # Taken from Fredrik's code
+            for m in range(int(minm), 10000):
+                arg = mpmath.mp.pi() * mpmath.mpf(Y)
+                r = mpmath.mpf(1) / arg.sqrt()
+                arg = arg * mpmath.mpf(2*m)
+                r = r * mpmath.gammainc(mpmath.mpf(0.5), arg)
+                error_estimate = r
+                if (error_estimate < eps):
+                    raise StopIteration()
+        except StopIteration:
+            mpmath.mp.dps = old_precision
+            return m
+        mpmath.mp.dps = old_precision
+        raise ValueError("No good truncation value was found!")
+
+
+def make_matrix(R, Y, zdata, signs, symmetry=-1, withtime=False):
+    """
+    From the full matrix system VC = 0, set the first coefficient to 1, remove
+    the first row, and write the resulting normalized system as V_1 C_1 = B.
+    Then return V_1 and B.
+    """
+    Q = len(zdata)
+    size = Q - 1
+    retmat = []
+    B = [0] * (size - 1)
+    if withtime:
+        starttime = time.time()
+    for n in range(2, size+1):
+        if withtime:
+            now = time.time()
+        # row = []
+        row = [0]*(size-1)
+        for m in range(2, size+1):
+            entry = compute_V(n, m, R, zdata, signs, symmetry=symmetry)
+            if n == m:
+                entry = entry - sqrt(Y) * kappa_with_mult(R, n*Y)
+            # row.append(entry)
+            row[m-2] = entry
+
+        bentry = -compute_V(n, 1, R, zdata, signs, symmetry=symmetry)
+        # B.append([bentry])
+        B[n-2] = bentry
+        retmat.append(row)
+
+        if withtime:
+            print("# row {} computed in {} seconds".format(n, time.time() - now))
+    if withtime:
+        print("# Matrix computed in {} seconds".format(time.time() - starttime))
+    return retmat, B
+
+
+def maass_form_coeffs(Y, R, zdata, signs, symmetry=-1):
+    if abs(Y - CDF(zdata[0][0]).imag()) > 1e-5:
+        raise ValueError("Y and zdata must align")
+    mat, B = make_matrix(R, Y, zdata, signs, symmetry=symmetry)
+    # We solve in a higher precision space, even though individual entries are
+    # only in double precision. In some cases, this precision might not be
+    # enough and a ZeroDivisionException might occur. This is something that
+    # requires additional attention to figure out.
+    matmpm = mpmath.mp.matrix(mat)
+    Bmpm = mpmath.mp.matrix(B)
+    return (matmpm ** -1) * Bmpm
+
+
+def short_all_signs(level):
+    """
+    Returns a list of all possible sign dictionaries, but where the sign of
+    infinity is always 1.
+    """
+    if level == 1:
+        return [{infinity: 1}]
+    ps = [p for p in primes(200) if level % p == 0]
+
+    # create all possible dictionaries with keys from ps and values in +-1
+    import itertools
+    value_combs = list(itertools.product([-1, 1], repeat=len(ps)))
+    base_sign_dictionaries = []
+    for comb in value_combs:
+        d = dict(zip(ps, comb))
+        base_sign_dictionaries.append(d)
+
+    # extend each dictionary to other cusps
+    for d in base_sign_dictionaries:
+        for i in range(2, len(ps) + 1):
+            for comb in itertools.combinations(ps, i):
+                product = 1
+                local_sign = 1
+                for p in comb:
+                    product *= p
+                    local_sign *= d[p]
+                d[product] = local_sign
+
+    # label the cusps correctly by 1/p, infinity, and 0
+    sign_dictionaries = []
+    for d in base_sign_dictionaries:
+        sign_dict = dict()
+        for k, v in d.items():
+            if k == level:
+                sign_dict[0] = v
+            else:
+                sign_dict[1/k] = v
+        sign_dict[infinity] = 1
+        sign_dictionaries.append(sign_dict)
+
+    return sign_dictionaries
+
+
+def all_signs(default_sign_dict):
+    """
+    Returns a list of all possible sign dictionaries, but where the sign of
+    infinity is always 1.
+    """
+    keys = list(default_sign_dict.keys())
+    if len(keys) == 1:
+        return [default_sign_dict]
+    ret = [{infinity: 1}]
+    assert infinity in keys, "Infinity must be a cusp"
+    for key in keys:
+        if key == infinity:
+            continue
+        intermediate = []
+        for d in ret:
+            for v in (-1, 1):
+                d1 = d.copy()
+                d1[key] = v
+                intermediate.append(d1)
+        ret = intermediate
+    return ret
+
+
+def find_single_ev_linearized(
+            R, ballradius, signs, groupdata, symmetry=-1, verbosity=1, allsigns=False
+        ):
+    """
+    Locate a single eigenvalue of a Maass form with given symmetry type and
+    Atkin-Lehner sign type, within a ball of radius `ballradius` around R.
+    """
+    if allsigns:
+        signs = dict()
+        for cusp in groupdata['cusps']:
+            signs[cusp] = 1
+        for singlesign in all_signs(signs):
+            ret = find_single_ev_linearized(R, ballradius, singlesign, groupdata, symmetry, verbosity, allsigns=False)
+            if ret:
+                return ret
+    else:
+        if VERBOSE:
+            verbosity = 100
+
+        maass_space_data = MaassSpaceData(R+ballradius, groupdata)
+        error_bound = 1e-7
+        Y = maass_space_data.Y
+        zdata = maass_space_data.zdata
+
+        # TODO
+        # This logic needs to be made more specific later, and reuse computations
+        # Also iterate through all signs initially? Potentially major time saving
+        cands = [(R, ballradius)]
+        for iternum in range(200):
+            if len(cands) == 0:
+                return None
+            curr_guess, curr_radius = cands.pop()
+            if verbosity >= 2:
+                print("# Current guess and radius: {}, {}.  {} other branches remaining".format(
+                    curr_guess, curr_radius, len(cands))
+                )
+            if curr_radius < error_bound:
+                if verbosity > 0:
+                    print("# {} is a near candidate --- checking coefficient diffs".format(curr_guess))
+
+                coeffs_Y1 = maass_form_coeffs(Y, mpmath_ctx.mpf(curr_guess), zdata, signs, symmetry=symmetry)
+                msd2 = MaassSpaceData(mpmath_ctx.mpf(curr_guess), groupdata, 0.9*Y)
+                coeffs_Y2 = maass_form_coeffs(msd2.Y, mpmath_ctx.mpf(curr_guess), msd2.zdata, signs, symmetry=symmetry)
+
+                coeff_error = sum(abs(coeffs_Y1[j] - coeffs_Y2[j]) for j in range(4))
+                if coeff_error < 1e-5:
+                    if verbosity > 0:
+                        print("# {} has passed check.".format(curr_guess))
+                        print("#   Coeff error was {}".format(mpmath.nstr(coeff_error)))
+                        print("#   signs: {}".format(str(signs)))
+                    return curr_guess, coeffs_Y1, signs
+                else:
+                    if verbosity > 0:
+                        print("# {} failed check. It's not an eigenvalue.".format(curr_guess))
+                        print("#   Coeff error was {}".format(mpmath.nstr(coeff_error)))
+                    continue
+            else:
+                V = make_full_matrix(curr_guess, Y, zdata, signs, symmetry=symmetry)
+                # we approximate the derivative V' with a secant
+                difference = 1e-10
+                Vplus = make_full_matrix(curr_guess + difference, Y, zdata, signs, symmetry=symmetry)
+                V_sage = matrix(RDF, V)
+                Vplus_sage = matrix(RDF, Vplus)
+                Vprime_sage = (Vplus_sage - V_sage)/difference
+
+                linearized_mat_sage = Vprime_sage.inverse() * V_sage
+                eigenvalues = linearized_mat_sage.eigenvalues()
+                for eigenvalue_delta in eigenvalues:
+                    if abs(eigenvalue_delta) < curr_radius:
+                        cands.append((curr_guess - eigenvalue_delta.real(), abs(eigenvalue_delta*0.5)))
+        return None
+
+
+
+def find_evs(R1, R2, signs, groupdata, diff=0.1, symmetry=-1, verbosity=0, allsigns=False):
+    if allsigns:
+        signs = dict()
+        ret = []
+        for cusp in groupdata['cusps']:
+            signs[cusp] = 1
+        for singlesign in all_signs(signs):
+            ret += find_evs(
+                R1, R2, singlesign, groupdata, diff=diff,
+                symmetry=symmetry, verbosity=verbosity, allsigns=False
+            )
+        return ret
+    else:
+        if VERBOSE:
+            verbosity = 100
+        evlist = []
+        currR = R1
+        while currR < R2:
+            if verbosity >= 2:
+                print("# Trying {}   with signs: {}".format(currR, str(signs)))
+            cand = find_single_ev_linearized(currR, 0.1, signs, groupdata, symmetry=symmetry, verbosity=verbosity)
+            if cand:
+                if verbosity >= 1:
+                    print("EIGENVALUE: {}   with signs: {}".format(cand[0], str(signs)))
+                evlist.append(cand)
+            currR += diff
+        return evlist

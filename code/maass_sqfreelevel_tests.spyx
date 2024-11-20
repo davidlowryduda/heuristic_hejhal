@@ -1,0 +1,103 @@
+"""
+Basic test suite for sqfree level.
+"""
+
+from maass_sqfreelevel_computations import *
+
+
+def is_close_enough(val1, val2, tolerance=1e-10):
+    if val1 == val2:
+        return True
+    if val1 == infinity:
+        return val2 == infinity
+    return abs(val1 - val2) < tolerance
+
+
+def test_group_data_level5():
+    """
+    Check import and basic group data for Gamma0(5)
+    """
+    d = group_data(5)
+    for c in [0, infinity]:
+        assert c in d['cusps'], "cusp check"
+    for pv in [0, 1, infinity]:
+        assert pv in d['pvertices'], "pv check"
+    Udata = d['Udata'][1]
+    assert Udata[1] == 0, "0 --> 1"
+    for vl, udata in d['Udata'].items():
+        assert vl == udata[0], "vl label"
+        assert is_close_enough(
+            udata[1], act(udata[2], udata[0])
+        ), "Ul vl = rhoj : {}".format(vl)
+    for pj, cdata in d['Cdata'].items():
+        assert cdata[0] == cdata[1], "vl=pj"
+        assert cdata[2] == Idmatrix, "Ul=Id"
+    print("Groupdata on level 5 tests pass.")
+
+
+def test_pullback():
+    """
+    Check pullbacks to gamma0 fundamental domain.
+    """
+    groupdata = group_data(5)
+    pt1 = CDF(1.12343, 0.252)
+    pb1 = pullback_to_gammaN_fund_domain(pt1, groupdata)
+    res1 = CDF(-0.155846, 0.145314)
+    assert is_close_enough(pb1[1], res1, 0.0001), "pb1"
+    assert is_close_enough(act(pb1[0], pt1), res1, tolerance=0.0001), "pb1 act"
+
+    _, pb = pullback_to_gammaN_fund_domain(CDF(0.25, 0.045), groupdata)
+    assert is_close_enough(pb, CDF(-0.234499, 0.086851), 1e-5)
+
+    _, pb = pullback_to_gammaN_fund_domain(CDF(0.26, 0.045), groupdata)
+    assert is_close_enough(pb, CDF(-0.2523489, 0.0966442), 1e-5)
+    print("Pullback tests pass")
+
+
+def test_nearest():
+    """
+    Check the closest vertex and height map.
+    """
+    groupdata = group_data(5)
+    _, pb = pullback_to_gammaN_fund_domain(CDF(0.26, 0.045), groupdata)
+    pvert, cusp, ht, translate = nearest_pvertex(pb, groupdata)
+
+    assert pvert == 0, "pv nearest"
+    assert is_close_enough(ht, 0.264705882, 1e-7), "ht"
+    assert is_close_enough(translate, CDF(0.69117647, 0.264705882), 1e-6)
+    print("Nearest tests pass")
+
+
+def test_zmstar():
+    """
+    Check computation of zmstar data.
+    """
+    groupdata = group_data(5)
+    zs = make_zms(0.15, groupdata, 10)
+    # zm, zm_star, cusp, wm
+    for zm, zm_star, _, _ in zs:
+        assert not is_close_enough(zm, zm_star, 1e-7), "zm = zmstar"
+    z2 = zs[2][0]
+    mat2, w2 = pullback_to_gammaN_fund_domain(z2, groupdata)
+    assert is_close_enough(act(mat2, z2), zs[2][3]), "gamma z2 = w2"
+
+    # TODO add a worked example
+
+    print("Zmstar tests pass")
+
+# TODO add tests for groupdata
+
+# TODO work an example by hand for gamma0(1), gamma0(5), gamma0(6) and write
+# tests checking the work.
+
+
+def run_tests():
+    """
+    Run all tests.
+    """
+    print("\nRunning tests...\n")
+    test_group_data_level5()
+    test_pullback()
+    test_nearest()
+    test_zmstar()
+    print("\nAll tests pass.\n")
