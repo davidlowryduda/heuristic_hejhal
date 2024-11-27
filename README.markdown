@@ -68,7 +68,7 @@ Solving for the coefficients gives a vector $\vec{a}_{r_0}$.
 Of course, we don't know the actual eigenvalue.
 So it won't be true that $f(z_m) = f(z_m^\dagger)$ with the claimed coefficients.
 Instead, there will be some error.
-We might study a \dagger*cost function** or **error function** in the coefficients,
+We might study a **cost function** or **error function** in the coefficients,
 say
 ```math
 C(r) = a_{r}(2) \cdot a_r(3) - a_r(6).
