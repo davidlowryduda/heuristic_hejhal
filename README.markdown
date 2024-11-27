@@ -15,62 +15,64 @@ Begin with a guess $r_0$ of the spectral parameter for a Maass form on
 $\mathrm{SL}(2, \mathbb{Z})$ (for simplicity, we begin with the full modular
 group). A Maass form $f$ with the eigenvalue $\frac{1}{4} + r_0^2$ would have
 an expansion of the form
-$$
-    f(z) = \sum_{n \neq 0} a(n) \sqrt{y} K_{ir_0}(2 \pi |n| y) e^{2 \pi i n x},
-$$
+```math
+f(z) = \sum_{n \neq 0} a(n) \sqrt{y} K_{ir_0}(2 \pi |n| y) e^{2 \pi i n x},
+```
 where $K_{\nu}(y)$ is the modified $K$-Bessel function.
 The $K$-Bessel function rapidly decays, so truncating introduces small error
-$$
-    \widehat{f}(z) \approx \sum_{0 < |n| < M} a(n) \sqrt{y} K_{ir_0}(2 \pi |n| y) e^{2 \pi i n x}.
-$$
+```math
+\widehat{f}(z) \approx \sum_{0 < |n| < M} a(n) \sqrt{y} K_{ir_0}(2 \pi |n| y) e^{2 \pi i n x}.
+```
 
 Compute these approximations along a horocycle $\{ z_m = x_m + iY \}$ for
 $2Q$ equally spaced points $x_m$.
 Evaluating $\widehat{f}$ at these points amounts to taking a discrete Fourier
 transform.
 Inverting the transform shows that
-$$
-    a(n) \sqrt{Y} K_{ir_0}(2 \pi |n| Y)
-    =
-    \frac{1}{2Q}
-    \sum_{1-Q = m}^Q
-    \widehat{f}(z_m) e(-nx_m).
-$$
+```math
+a(n) \sqrt{Y} K_{ir_0}(2 \pi |n| Y)
+=
+\frac{1}{2Q}
+\sum_{1-Q = m}^Q
+\widehat{f}(z_m) e(-nx_m).
+```
 
 For fixed $r_0$ and $Y$, this is a linear system in the coefficients.
 But the system is very poorly behaved.
 To improve the system, we use that $f(\gamma z) = f(z)$ for all $\gamma$ in the
 full modular group.
 
-For each point $z_m$ in the horocycle, let $z_m^*$ denote the corresponding
+For each point $z_m$ in the horocycle, let $z_m^\dagger$ denote the corresponding
 point in the fundamental domain (i.e. there should be some $\gamma_m$ such that
-$\gamma z_m = z_m^*$ and $z_m^*$ is in the fundamental domain).
-Then $f(z_m) = f(z_m^*)$, the the action of $\gamma_m$ is generically highly
+$\gamma z_m = z_m^\dagger$ and $z_m^\dagger$ is in the fundamental domain).
+Then $f(z_m) = f(z_m^\dagger)$, the the action of $\gamma_m$ is generically highly
 nonlinear.
 By choosing the $Y$ in the horocycle small enough, no point $z_m$ will be in
 the fundamental domain and every point will map nontrivially to another point
-$z_m^*$.
+$z_m^\dagger$.
 
 Set up the linear system based on
-$$
+```math
     a(n) \sqrt{Y} K_{ir_0}(2 \pi |n| Y)
     =
     \frac{1}{2Q}
     \sum_{1-Q = m}^Q
-    \widehat{f}(z_m^*) e(-nx_m),
-$$
-where we use $z_m^*$ here instead. Expanding each of the expansions of
+    \widehat{f}(z_m^\dagger) e(-nx_m),
+```
+where we use $z_m^\dagger$ here instead. Expanding each of the expansions of
 $\widehat{f}$ on the right, we now have a (homogenous, overdetermined,
 approximate) linear system in the coefficients.
 
 Solving for the coefficients gives a vector $\vec{a}_{r_0}$.
 
 Of course, we don't know the actual eigenvalue.
-So it won't be true that $f(z_m) = f(z_m^*)$ with the claimed coefficients.
+So it won't be true that $f(z_m) = f(z_m^\dagger)$ with the claimed coefficients.
 Instead, there will be some error.
-We might study a **cost function** or **error function** in the coefficients,
+We might study a \dagger*cost function** or **error function** in the coefficients,
 say
-$$ C(r) = a_{r}(2) \cdot a_r(3) - a_r(6). $$
+```math
+C(r) = a_{r}(2) \cdot a_r(3) - a_r(6).
+```
 If $r$ were a true eigenvalue, then $C(r) = 0$ as we would have a Hecke
 eigenform.
 Thus finding an $r$ such that $C(r) = 0$ is heuristically a good way to find a
@@ -84,9 +86,9 @@ Then we can treat this as a root-finding problem in $C(r)$.
 For example, we might use the secand method and produce an iterative sequence
 of guesses.
 Given two guesses $r_0$ and $r_1$, we can produce the next estimate $r_2$ via
-$$
-    r_2 = \frac{r_0 C(r_1) - r_1 C(r_0)}{C(r_1) - C(r_0)}.
-$$
+```math
+r_2 = \frac{r_0 C(r_1) - r_1 C(r_0)}{C(r_1) - C(r_0)}.
+```
 If $r_0$ and $r_1$ are close enough to a true eigenvalue, we expect this to
 converge extremely rapidly.
 
