@@ -79,6 +79,7 @@ def main(level):
     with open(outfname, "w", encoding="utf8") as outfile:
         for line in lines:
             _, label, R, sym = line.split(";")
+            sym = sym.strip()
             # Annoying difference: 0/1 vs 1/-1 for even/odd.
             if sym == '0':
                 sym = 1
